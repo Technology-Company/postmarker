@@ -2,6 +2,7 @@ import base64
 import os
 import platform
 from email import encoders
+from email.message import EmailMessage
 from email.mime.base import MIMEBase
 from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
@@ -69,6 +70,23 @@ def get_mime_message(text, html_text=None, **kwargs):
     return instance
 
 
+def get_new_style_message(text, html_text=None, **kwargs):
+    """Build an email.message.EmailMessage, the type Django 6.0+ returns."""
+    msg = EmailMessage()
+    msg.set_content(text)
+    if html_text:
+        msg.add_alternative(html_text, subtype="html")
+    for key, value in kwargs.items():
+        # EmailMessage uses replace_header if already set, so del first
+        if key in msg:
+            del msg[key]
+        msg[key] = value
+    return msg
+
+
+NEW_STYLE_MESSAGE = get_new_style_message("Text", **DEFAULT_HEADERS)
+NEW_STYLE_ALTERNATIVE = get_new_style_message("Text", "HTML content", **DEFAULT_HEADERS)
+
 MIME_MESSAGE = get_mime_message("Text", **DEFAULT_HEADERS)
 MIME_ALTERNATIVE = get_mime_message("Text", "HTML content", **DEFAULT_HEADERS)
 ENCODED_CONTENT = "dGVzdCBjb250ZW50\n"
@@ -127,7 +145,7 @@ class TestSimpleSend:
     def test_invalid(self, postmark):
         with pytest.raises(TypeError) as exc:
             postmark.emails.send(message=object())
-        assert str(exc.value) == "message should be either Email or MIMEText or MIMEMultipart instance"
+        assert str(exc.value) == "message should be either an Email or an email.message.Message instance"
 
     def test_message_and_kwargs(self, postmark, email):
         with pytest.raises(AssertionError) as exc:
@@ -191,6 +209,25 @@ class TestSimpleSend:
             "To": "receiver@example.com",
         }
 
+    def test_new_style_plain(self, postmark, postmark_request):
+        """email.message.EmailMessage plain text via send() (Django 6.0+)."""
+        postmark.emails.send(NEW_STYLE_MESSAGE)
+        data = postmark_request.call_args[1]["json"]
+        assert data["TextBody"] == "Text\n"
+        assert data["HtmlBody"] is None
+        assert data["From"] == "sender@example.com"
+        assert data["To"] == "receiver@example.com"
+        assert data["Subject"] == "Test subject"
+
+    def test_new_style_alternative(self, postmark, postmark_request):
+        """email.message.EmailMessage multipart via send() (Django 6.0+)."""
+        postmark.emails.send(NEW_STYLE_ALTERNATIVE)
+        data = postmark_request.call_args[1]["json"]
+        assert data["TextBody"] == "Text\n"
+        assert data["HtmlBody"] == "HTML content\n"
+        assert data["From"] == "sender@example.com"
+        assert data["To"] == "receiver@example.com"
+
     def test_send_with_template(self, postmark):
         response = postmark.emails.send_with_template(
             TemplateId=983381,
@@ -253,6 +290,52 @@ class TestBatchSend:
         postmark.emails.send_batch(MIME_MESSAGE)
         email = Email.from_mime(MIME_MESSAGE, postmark)
         assert postmark_request.call_args[1]["json"] == (email.as_dict(),)
+
+    def test_new_style_plain(self, postmark, postmark_request):
+        """email.message.EmailMessage via send_batch() (Django 6.0+)."""
+        postmark.emails.send_batch(NEW_STYLE_MESSAGE)
+        data = postmark_request.call_args[1]["json"][0]
+        assert data["TextBody"] == "Text\n"
+        assert data["HtmlBody"] is None
+        assert data["From"] == "sender@example.com"
+        assert data["To"] == "receiver@example.com"
+        assert data["Subject"] == "Test subject"
+
+    def test_new_style_alternative(self, postmark, postmark_request):
+        """email.message.EmailMessage multipart via send_batch() (Django 6.0+)."""
+        postmark.emails.send_batch(NEW_STYLE_ALTERNATIVE)
+        data = postmark_request.call_args[1]["json"][0]
+        assert data["TextBody"] == "Text\n"
+        assert data["HtmlBody"] == "HTML content\n"
+        assert data["From"] == "sender@example.com"
+        assert data["To"] == "receiver@example.com"
+
+    def test_new_style_with_attachment(self, postmark, postmark_request):
+        """email.message.EmailMessage with attachment via send_batch() (Django 6.0+)."""
+        msg = get_new_style_message("Text", **DEFAULT_HEADERS)
+        msg.add_attachment(b"test content", maintype="application", subtype="octet-stream", filename="report.pdf")
+        postmark.emails.send_batch(msg)
+        data = postmark_request.call_args[1]["json"][0]
+        assert data["TextBody"] == "Text\n"
+        assert len(data["Attachments"]) == 1
+        assert data["Attachments"][0]["Name"] == "report.pdf"
+        assert data["Attachments"][0]["ContentType"] == "application/octet-stream"
+
+    def test_new_style_alternative_with_attachment(self, postmark, postmark_request):
+        """email.message.EmailMessage with HTML and attachment via send_batch() (Django 6.0+).
+
+        This creates a nested multipart/mixed -> multipart/alternative structure,
+        exercising the recursive branch of deconstruct_multipart_recursive.
+        """
+        msg = get_new_style_message("Text", "HTML content", **DEFAULT_HEADERS)
+        msg.add_attachment(b"test content", maintype="application", subtype="octet-stream", filename="report.pdf")
+        postmark.emails.send_batch(msg)
+        data = postmark_request.call_args[1]["json"][0]
+        assert data["TextBody"] == "Text\n"
+        assert data["HtmlBody"] == "HTML content\n"
+        assert len(data["Attachments"]) == 1
+        assert data["Attachments"][0]["Name"] == "report.pdf"
+        assert data["Attachments"][0]["ContentType"] == "application/octet-stream"
 
     def test_invalid(self, postmark):
         with pytest.raises(ValueError):
@@ -326,6 +409,25 @@ class TestEmail:
         assert email.Cc == MIME_MESSAGE["Cc"]
         assert email.Bcc == MIME_MESSAGE["Bcc"]
         assert email.ReplyTo == MIME_MESSAGE["Reply-To"]
+
+    def test_from_mime_new_style(self, postmark):
+        """email.message.EmailMessage (Django 6.0+) plain text."""
+        email = Email.from_mime(NEW_STYLE_MESSAGE, postmark)
+        assert email.TextBody == "Text\n"
+        assert email.From == NEW_STYLE_MESSAGE["From"]
+        assert email.To == NEW_STYLE_MESSAGE["To"]
+        assert email.Subject == NEW_STYLE_MESSAGE["Subject"]
+        assert email.Cc == NEW_STYLE_MESSAGE["Cc"]
+        assert email.Bcc == NEW_STYLE_MESSAGE["Bcc"]
+        assert email.ReplyTo == NEW_STYLE_MESSAGE["Reply-To"]
+
+    def test_from_mime_new_style_alternative(self, postmark):
+        """email.message.EmailMessage (Django 6.0+) with HTML alternative."""
+        email = Email.from_mime(NEW_STYLE_ALTERNATIVE, postmark)
+        assert email.TextBody == "Text\n"
+        assert email.HtmlBody == "HTML content\n"
+        assert email.From == NEW_STYLE_ALTERNATIVE["From"]
+        assert email.To == NEW_STYLE_ALTERNATIVE["To"]
 
     @pytest.mark.parametrize(
         "image, expected",
