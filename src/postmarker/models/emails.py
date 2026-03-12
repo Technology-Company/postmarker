@@ -3,6 +3,7 @@ import mimetypes
 import os
 from base64 import b64encode
 from email.header import decode_header
+from email.message import Message
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -37,7 +38,7 @@ def prepare_attachments(attachment):
         }
         if len(attachment) == 4:
             result["ContentID"] = attachment[3]
-    elif isinstance(attachment, MIMEBase):
+    elif isinstance(attachment, Message):
         payload = attachment.get_payload()
         content_type = attachment.get_content_type()
         # Special case for message/rfc822
@@ -76,7 +77,7 @@ def deconstruct_multipart_recursive(seen, text, html, attachments, message):
     if message in seen:
         return
     seen.add(message)
-    if isinstance(message, MIMEMultipart):
+    if message.is_multipart():
         for part in message.walk():
             deconstruct_multipart_recursive(seen, text, html, attachments, part)
     else:
@@ -285,7 +286,7 @@ class EmailBatch(Model):
         """Converts incoming data to properly structured dictionary."""
         if isinstance(email, dict):
             email = Email(manager=self._manager, **email)
-        elif isinstance(email, (MIMEText, MIMEMultipart)):
+        elif isinstance(email, Message):
             email = Email.from_mime(email, self._manager)
         elif not isinstance(email, Email):
             raise ValueError
@@ -391,7 +392,7 @@ class EmailManager(ModelManager):
                 Attachments=Attachments,
                 MessageStream=MessageStream,
             )
-        elif isinstance(message, (MIMEText, MIMEMultipart)):
+        elif isinstance(message, Message):
             message = Email.from_mime(message, self)
         elif not isinstance(message, Email):
             raise TypeError("message should be either Email or MIMEText or MIMEMultipart instance")
