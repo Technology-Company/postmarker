@@ -145,7 +145,7 @@ class TestSimpleSend:
     def test_invalid(self, postmark):
         with pytest.raises(TypeError) as exc:
             postmark.emails.send(message=object())
-        assert str(exc.value) == "message should be either Email or MIMEText or MIMEMultipart instance"
+        assert str(exc.value) == "message should be either an Email or an email.message.Message instance"
 
     def test_message_and_kwargs(self, postmark, email):
         with pytest.raises(AssertionError) as exc:
@@ -317,6 +317,22 @@ class TestBatchSend:
         postmark.emails.send_batch(msg)
         data = postmark_request.call_args[1]["json"][0]
         assert data["TextBody"] == "Text\n"
+        assert len(data["Attachments"]) == 1
+        assert data["Attachments"][0]["Name"] == "report.pdf"
+        assert data["Attachments"][0]["ContentType"] == "application/octet-stream"
+
+    def test_new_style_alternative_with_attachment(self, postmark, postmark_request):
+        """email.message.EmailMessage with HTML and attachment via send_batch() (Django 6.0+).
+
+        This creates a nested multipart/mixed -> multipart/alternative structure,
+        exercising the recursive branch of deconstruct_multipart_recursive.
+        """
+        msg = get_new_style_message("Text", "HTML content", **DEFAULT_HEADERS)
+        msg.add_attachment(b"test content", maintype="application", subtype="octet-stream", filename="report.pdf")
+        postmark.emails.send_batch(msg)
+        data = postmark_request.call_args[1]["json"][0]
+        assert data["TextBody"] == "Text\n"
+        assert data["HtmlBody"] == "HTML content\n"
         assert len(data["Attachments"]) == 1
         assert data["Attachments"][0]["Name"] == "report.pdf"
         assert data["Attachments"][0]["ContentType"] == "application/octet-stream"

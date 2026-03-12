@@ -395,7 +395,7 @@ class EmailManager(ModelManager):
         elif isinstance(message, Message):
             message = Email.from_mime(message, self)
         elif not isinstance(message, Email):
-            raise TypeError("message should be either Email or MIMEText or MIMEMultipart instance")
+            raise TypeError("message should be either an Email or an email.message.Message instance")
         return message.send()
 
     def send_with_template(
